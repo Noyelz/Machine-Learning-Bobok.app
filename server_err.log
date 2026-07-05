@@ -1,0 +1,121 @@
+C:\Users\iyel\miniconda3\Lib\site-packages\engineio\async_drivers\eventlet.py:1: EventletDeprecationWarning: 
+Eventlet is deprecated. It is currently being maintained in bugfix mode, and
+we strongly recommend against using it for new projects.
+
+If you are already using Eventlet, we recommend migrating to a different
+framework.  For more detail see
+https://eventlet.readthedocs.io/en/latest/asyncio/migration.html
+
+  from eventlet.green.threading import Event
+INFO:ai.deteksi_bobok:Memuat model CatBoost dari C:\Users\iyel\Documents\Machine-Learning-Bobok.app\ai\model_kantuk_v1.cbm ...
+INFO:ai.deteksi_bobok:Model CatBoost siap.
+INFO:__main__:Model CatBoost berhasil dimuat saat startup.
+An exception was thrown while monkey_patching for eventlet. to fix this error make sure you run eventlet.monkey_patch() before importing any other modules.
+Traceback (most recent call last):
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 607, in _upgrade_instances
+    new = upgrade_or_traverse(v)
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 584, in upgrade_or_traverse
+    _upgrade_instances(obj, klass, upgrade, visited, old_to_new)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 598, in _upgrade_instances
+    container_vars = vars(container)
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\werkzeug\local.py", line 311, in __get__
+    obj = instance._get_current_object()
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\werkzeug\local.py", line 508, in _get_current_object
+    raise RuntimeError(unbound_message) from None
+RuntimeError: Working outside of application context.
+
+This typically means that you attempted to use functionality that needed
+the current application. To solve this, set up an application context
+with app.app_context(). See the documentation for more information.
+An exception was thrown while monkey_patching for eventlet. to fix this error make sure you run eventlet.monkey_patch() before importing any other modules.
+Traceback (most recent call last):
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 607, in _upgrade_instances
+    new = upgrade_or_traverse(v)
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 584, in upgrade_or_traverse
+    _upgrade_instances(obj, klass, upgrade, visited, old_to_new)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 598, in _upgrade_instances
+    container_vars = vars(container)
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\werkzeug\local.py", line 311, in __get__
+    obj = instance._get_current_object()
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\werkzeug\local.py", line 508, in _get_current_object
+    raise RuntimeError(unbound_message) from None
+RuntimeError: Working outside of request context.
+
+This typically means that you attempted to use functionality that needed
+an active HTTP request. Consult the documentation on testing for
+information about how to avoid this problem.
+An exception was thrown while monkey_patching for eventlet. to fix this error make sure you run eventlet.monkey_patch() before importing any other modules.
+Traceback (most recent call last):
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 607, in _upgrade_instances
+    new = upgrade_or_traverse(v)
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 584, in upgrade_or_traverse
+    _upgrade_instances(obj, klass, upgrade, visited, old_to_new)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 598, in _upgrade_instances
+    container_vars = vars(container)
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\werkzeug\local.py", line 311, in __get__
+    obj = instance._get_current_object()
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\werkzeug\local.py", line 508, in _get_current_object
+    raise RuntimeError(unbound_message) from None
+RuntimeError: Working outside of application context.
+
+This typically means that you attempted to use functionality that needed
+the current application. To solve this, set up an application context
+with app.app_context(). See the documentation for more information.
+An exception was thrown while monkey_patching for eventlet. to fix this error make sure you run eventlet.monkey_patch() before importing any other modules.
+Traceback (most recent call last):
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 607, in _upgrade_instances
+    new = upgrade_or_traverse(v)
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 584, in upgrade_or_traverse
+    _upgrade_instances(obj, klass, upgrade, visited, old_to_new)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 598, in _upgrade_instances
+    container_vars = vars(container)
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\werkzeug\local.py", line 311, in __get__
+    obj = instance._get_current_object()
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\werkzeug\local.py", line 508, in _get_current_object
+    raise RuntimeError(unbound_message) from None
+RuntimeError: Working outside of request context.
+
+This typically means that you attempted to use functionality that needed
+an active HTTP request. Consult the documentation on testing for
+information about how to avoid this problem.
+An exception was thrown while monkey_patching for eventlet. to fix this error make sure you run eventlet.monkey_patch() before importing any other modules.
+Traceback (most recent call last):
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 607, in _upgrade_instances
+    new = upgrade_or_traverse(v)
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 584, in upgrade_or_traverse
+    _upgrade_instances(obj, klass, upgrade, visited, old_to_new)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 598, in _upgrade_instances
+    container_vars = vars(container)
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\werkzeug\local.py", line 311, in __get__
+    obj = instance._get_current_object()
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\werkzeug\local.py", line 508, in _get_current_object
+    raise RuntimeError(unbound_message) from None
+RuntimeError: Working outside of application context.
+
+This typically means that you attempted to use functionality that needed
+the current application. To solve this, set up an application context
+with app.app_context(). See the documentation for more information.
+An exception was thrown while monkey_patching for eventlet. to fix this error make sure you run eventlet.monkey_patch() before importing any other modules.
+Traceback (most recent call last):
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 607, in _upgrade_instances
+    new = upgrade_or_traverse(v)
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 584, in upgrade_or_traverse
+    _upgrade_instances(obj, klass, upgrade, visited, old_to_new)
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\eventlet\patcher.py", line 598, in _upgrade_instances
+    container_vars = vars(container)
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\werkzeug\local.py", line 311, in __get__
+    obj = instance._get_current_object()
+  File "C:\Users\iyel\miniconda3\Lib\site-packages\werkzeug\local.py", line 508, in _get_current_object
+    raise RuntimeError(unbound_message) from None
+RuntimeError: Working outside of request context.
+
+This typically means that you attempted to use functionality that needed
+an active HTTP request. Consult the documentation on testing for
+information about how to avoid this problem.
+3 RLock(s) were not greened, to fix this error make sure you run eventlet.monkey_patch() before importing any other modules.

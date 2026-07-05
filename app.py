@@ -1,6 +1,10 @@
 import os
 import logging
+import numpy as np
+import cv2
 from datetime import datetime
+from io import BytesIO
+from PIL import Image
 
 from flask import Flask, jsonify, render_template, redirect, url_for, request, flash
 from flask_cors import CORS
@@ -13,29 +17,22 @@ logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-from ai.deteksi_bobok import DetectionSession, get_model
-
-# ============================================================
-# APP INIT
-# ============================================================
+from ai.deteksi_bobok import DetectionSession, get_model, process_image
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'bobok-secret-key-2024')
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(BASE_DIR, 'database.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Increase max content length to 5MB for image uploads
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
-# Dictionary untuk menyimpan DetectionSession per user_id
 user_sessions = {}
 
-
-# ============================================================
-# MODELS
-# ============================================================
 
 class User(db.Model, UserMixin):
     id            = db.Column(db.Integer, primary_key=True)
@@ -67,10 +64,6 @@ def load_user(user_id):
     return User.query.get(int(user_id))
 
 
-# ============================================================
-# AUTH ROUTES
-# ============================================================
-
 @app.route('/')
 def index():
     if current_user.is_authenticated:
@@ -86,7 +79,6 @@ def login():
         if current_user.role == 'admin':
             return redirect(url_for('admin_live'))
         return redirect(url_for('monitor'))
-
     if request.method == 'POST':
         username = request.form.get('username')
         password = request.form.get('password')
@@ -110,12 +102,7 @@ def register():
         if User.query.filter_by(username=username).first():
             flash('Username sudah terdaftar.')
             return redirect(url_for('register'))
-        user = User(
-            nama=nama,
-            username=username,
-            password_hash=generate_password_hash(password),
-            role=role
-        )
+        user = User(nama=nama, username=username, password_hash=generate_password_hash(password), role=role)
         db.session.add(user)
         db.session.commit()
         flash('Registrasi berhasil, silakan login.')
@@ -128,7 +115,6 @@ def register():
 def logout():
     if current_user.id in user_sessions:
         del user_sessions[current_user.id]
-
     live = LiveStatus.query.get(current_user.id)
     if live:
         live.status = 'OFFLINE'
@@ -136,10 +122,6 @@ def logout():
     logout_user()
     return redirect(url_for('login'))
 
-
-# ============================================================
-# PEKERJA ROUTES
-# ============================================================
 
 @app.route('/monitor')
 @login_required
@@ -157,10 +139,6 @@ def analytics():
     return render_template('analytics_pekerja.html', user=current_user)
 
 
-# ============================================================
-# ADMIN ROUTES
-# ============================================================
-
 @app.route('/admin/live')
 @login_required
 def admin_live():
@@ -176,10 +154,6 @@ def admin_analytics():
         return redirect(url_for('monitor'))
     return render_template('admin_analytics.html', user=current_user)
 
-
-# ============================================================
-# API ROUTES — ADMIN & ANALYTICS
-# ============================================================
 
 @app.route('/admin/live_data')
 @login_required
@@ -203,25 +177,14 @@ def admin_live_data():
 @app.route('/api/analytics')
 @login_required
 def api_analytics():
-    if current_user.role == 'pekerja':
-        target_id = current_user.id
-    else:
-        target_id = request.args.get('user_id', type=int)
-
+    target_id = current_user.id if current_user.role == 'pekerja' else request.args.get('user_id', type=int)
     query = EventKantuk.query
     if target_id:
         query = query.filter_by(user_id=target_id)
-
     events = query.order_by(EventKantuk.timestamp.desc()).all()
     hasil = []
     for e in events:
-        hasil.append({
-            'id':        e.id,
-            'user_id':   e.user_id,
-            'nama':      e.user.nama,
-            'timestamp': e.timestamp.isoformat(),
-            'jenis':     e.jenis
-        })
+        hasil.append({'id': e.id, 'user_id': e.user_id, 'nama': e.user.nama, 'timestamp': e.timestamp.isoformat(), 'jenis': e.jenis})
     return jsonify(hasil)
 
 
@@ -235,23 +198,14 @@ def pekerja_list():
 
 
 # ============================================================
-# DETECTION API — HTTP polling (ganti WebSocket)
+# DETECTION API
 # ============================================================
 
 @app.route('/api/detection/start', methods=['POST'])
 @login_required
 def api_start_detection():
-    """Memulai sesi deteksi untuk user yang sedang login."""
     user_id = current_user.id
-
-    if user_id in user_sessions:
-        logger.info("User %s: Mereset session deteksi.", user_id)
-    else:
-        logger.info("User %s: Membuat session deteksi baru.", user_id)
-
     user_sessions[user_id] = DetectionSession(user_id)
-
-    # Update DB
     live = LiveStatus.query.get(user_id)
     if not live:
         live = LiveStatus(user_id=user_id, status='AKTIF')
@@ -260,55 +214,65 @@ def api_start_detection():
         live.status = 'AKTIF'
         live.last_update = datetime.utcnow()
     db.session.commit()
-
-    return jsonify({'ok': True, 'message': 'Detection started'})
+    return jsonify({'ok': True})
 
 
 @app.route('/api/detection/stop', methods=['POST'])
 @login_required
 def api_stop_detection():
-    """Menghentikan sesi deteksi."""
     user_id = current_user.id
-
     if user_id in user_sessions:
         del user_sessions[user_id]
-        logger.info("User %s: Session deteksi dihentikan.", user_id)
-
     live = LiveStatus.query.get(user_id)
     if live:
         live.status = 'OFFLINE'
         db.session.commit()
-
-    return jsonify({'ok': True, 'message': 'Detection stopped'})
+    return jsonify({'ok': True})
 
 
 @app.route('/api/detection/frame', methods=['POST'])
 @login_required
 def api_process_frame():
     """
-    Terima data frame dari browser (blendshapes + landmarks),
-    jalankan inference, balas hasil deteksi.
+    Terima JPEG frame dari browser.
+    Decode → MediaPipe → CatBoost → return JSON.
     """
     user_id = current_user.id
-    data = request.get_json(force=True)
 
-    if not data:
-        return jsonify({'error': 'No data'}), 400
+    if 'frame' not in request.files:
+        return jsonify({'error': 'No frame file'}), 400
 
-    # Auto-start session jika belum ada
+    file = request.files['frame']
+    try:
+        # Decode JPEG ke numpy array BGR
+        img = Image.open(file.stream)
+        img = img.convert('RGB')
+        frame_rgb = np.array(img)
+        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+    except Exception as e:
+        logger.error("Failed to decode image: %s", e)
+        return jsonify({'error': 'Invalid image'}), 400
+
+    fw = int(request.form.get('frame_width', frame_bgr.shape[1]))
+    fh = int(request.form.get('frame_height', frame_bgr.shape[0]))
+
+    # Jalankan MediaPipe
+    has_face, blendshapes_dict, landmarks_list = process_image(frame_bgr)
+
+    # Auto-start session
     if user_id not in user_sessions:
         user_sessions[user_id] = DetectionSession(user_id)
 
     session = user_sessions[user_id]
 
-    # Jalankan inference
+    # Jalankan inference pipeline
     try:
-        result = session.process_frame(data)
+        result = session.process_frame_data(blendshapes_dict, landmarks_list, fw, fh, frame_bgr)
     except Exception as e:
         logger.error("Error process_frame user %s: %s", user_id, e)
         return jsonify({'error': str(e)}), 500
 
-    # Catat event baru ke DB
+    # Catat event baru
     new_events = result.get('has_new_events', [])
     if new_events:
         for ev_type in new_events:
@@ -334,10 +298,9 @@ def api_process_frame():
 
 with app.app_context():
     db.create_all()
-    # Pre-load model saat startup
     try:
         get_model()
-        logger.info("Model CatBoost berhasil dimuat saat startup.")
+        logger.info("Model CatBoost siap.")
     except Exception as e:
         logger.warning("Model CatBoost belum bisa dimuat: %s", e)
 
