@@ -23,7 +23,7 @@
       </div>
       <div>
         <div class="logo-title">BOBOK</div>
-        <div class="logo-sub">Sistem Deteksi Kantuk v2.0</div>
+        <div class="logo-sub">Sistem Deteksi Kantuk v3.0</div>
       </div>
     </div>
 
@@ -44,7 +44,7 @@
   <!-- MAIN GRID -->
   <main class="main-grid">
 
-    <!-- LEFT: Camera -->
+    <!-- LEFT: Camera (sekarang pakai <video> + <canvas>) -->
     <section class="panel cam-panel">
       <div class="panel-label">
         <span class="panel-label-dot"></span>
@@ -57,7 +57,11 @@
         <div class="cam-corner br"></div>
         <div class="cam-scan-line" id="camScanLine"></div>
 
-        <img id="videoFeed" src="" alt="Video Feed"/>
+        <!-- Hidden video element (untuk feed kamera) -->
+        <video id="videoElement" autoplay playsinline muted style="display:none;"></video>
+
+        <!-- Canvas untuk menampilkan video + overlay -->
+        <canvas id="overlayCanvas"></canvas>
 
         <div class="cam-offline" id="camOffline">
           <div class="cam-offline-icon">
@@ -236,7 +240,7 @@
     <div class="footer-divider"></div>
     <div class="footer-item">
       <span class="footer-label">Backend</span>
-      <span class="footer-val">127.0.0.1:5050</span>
+      <span class="footer-val">WebSocket</span>
     </div>
     <div class="footer-divider"></div>
     <div class="footer-item">
@@ -262,6 +266,10 @@
   <audio id="alertAudio" preload="auto">
     <source src="{{ url_for('static', filename='alert.mp3') }}" type="audio/mpeg"/>
   </audio>
+
+  <!-- MediaPipe Tasks Vision (WASM + JS) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+          crossorigin="anonymous"></script>
 
   <script src="{{ url_for('static', filename='js/monitor.js') }}"></script>
 </body>

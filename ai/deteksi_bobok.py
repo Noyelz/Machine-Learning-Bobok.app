@@ -1,65 +1,55 @@
 """
 deteksi_bobok.py
 ================
-Sistem deteksi kantuk real-time BOBOK
-Menggunakan FaceLandmarker + CatBoost
+Sistem deteksi kantuk real-time BOBOK — OPSI C (Hybrid)
+- Browser: kamera + MediaPipe JS (ekstrak blendshapes & landmark)
+- Server: terima data via WebSocket, lakukan inference CatBoost
 
-Cara pakai:
-    python deteksi_bobok.py
-
-Kebutuhan:
-    pip install mediapipe==0.10.14 catboost opencv-python numpy
-
-File yang dibutuhkan di folder yang sama:
-    - model_kantuk_v1.cbm
-    - face_landmarker.task  (download otomatis jika tidak ada)
+Perubahan dari versi sebelumnya:
+  - cv2.VideoCapture dihapus (kamera di browser)
+  - MediaPipe Python dihapus (pindah ke JS di browser)
+  - start_detection() diganti dengan DetectionSession class (per-user state)
+  - Tetap pakai CatBoost model (.cbm) untuk inference
+  - cv2.solvePnP tetap dipakai untuk head pose (pure numerik)
 """
 
 import cv2
-import mediapipe as mp
-from mediapipe.tasks import python as mp_python
-from mediapipe.tasks.python import vision as mp_vision
 import numpy as np
 from catboost import CatBoostClassifier
 from collections import deque
-import urllib.request
 import os
 import time
+import threading
+import logging
+
+logger = logging.getLogger(__name__)
 
 # ============================================================
-# KONFIGURASI — sesuaikan path jika perlu
+# KONFIGURASI
 # ============================================================
 
 BASE_DIR        = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH      = os.path.join(BASE_DIR, "model_kantuk_v1.cbm")
-LANDMARKER_PATH = os.path.join(BASE_DIR, "face_landmarker.task")
-LANDMARKER_URL  = ("https://storage.googleapis.com/mediapipe-models/"
-                   "face_landmarker/face_landmarker/float16/1/face_landmarker.task")
 
-print("BASE_DIR:", BASE_DIR)
-print("MODEL_PATH:", MODEL_PATH)
-print("File exists:", os.path.exists(MODEL_PATH))
-
-WINDOW_SIZE      = 30     # harus sama dengan saat training
-BLINK_THRESH     = 0.30   # JANGAN DIUBAH: harus sama dengan saat model di-training
-LONG_BLINK_FRAME = 8      # JANGAN DIUBAH: harus sama dengan saat model di-training
-YAWN_THRESH      = 0.30   # JANGAN DIUBAH: harus sama dengan saat model di-training
-YAWN_MIN_FRAME   = 10     # JANGAN DIUBAH: harus sama dengan saat model di-training
-NOD_THRESH       = 10
-MICROSLEEP_THRESH = 0.55  # Threshold terpisah khusus untuk menghitung microsleep (agar tidak sensitif)
+WINDOW_SIZE      = 30     # sliding window untuk fitur engineering
+BLINK_THRESH     = 0.30   # threshold mata tertutup
+LONG_BLINK_FRAME = 8      # threshold blink panjang
+YAWN_THRESH      = 0.30   # threshold mulut terbuka (menguap)
+YAWN_MIN_FRAME   = 10     # minimal frame untuk dihitung menguap
+NOD_THRESH       = 10     # threshold head nod (pitch)
+MICROSLEEP_THRESH = 0.55  # threshold microsleep (mata tertutup beruntun)
 
 KALIBRASI_DETIK  = 10     # durasi fase kalibrasi (detik)
-KAMERA_IDX       = 0      # 0 = kamera default laptop
 
 LABEL_NAMES = {0: "FOKUS", 1: "MULAI MENGANTUK", 2: "MENGANTUK"}
 WARNA       = {
-    0: (50, 205, 50),    # Hijau  — Alert
-    1: (0, 165, 255),    # Oranye — Low Vigilant
-    2: (0, 0, 255),      # Merah  — Drowsy
+    0: (50, 205, 50),    # Hijau
+    1: (0, 165, 255),    # Oranye
+    2: (0, 0, 255),      # Merah
 }
 
 # ============================================================
-# FACE 3D MODEL untuk head pose
+# FACE 3D MODEL untuk head pose (sama seperti sebelumnya)
 # ============================================================
 
 FACE_3D  = np.array([
@@ -70,67 +60,35 @@ FACE_3D  = np.array([
     [-150.0,-150.0, -125.0 ],
     [150.0, -150.0, -125.0 ],
 ], dtype=np.float64)
+
+# Indeks landmark MediaPipe yang digunakan untuk head pose
+# Browser HARUS mengirim 6 titik 2D dengan urutan sesuai indeks ini
 POSE_IDX = [1, 152, 33, 263, 78, 308]
 
 
 # ============================================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS (pure functions, tidak berubah)
 # ============================================================
 
-def download_landmarker():
-    """Download face_landmarker.task jika belum ada."""
-    if os.path.exists(LANDMARKER_PATH):
-        return
-    print("Mengunduh face_landmarker.task...")
-    urllib.request.urlretrieve(LANDMARKER_URL, LANDMARKER_PATH)
-    print("Download selesai.")
-
-
-def buat_detector():
-    opts = mp_vision.FaceLandmarkerOptions(
-        base_options=mp_python.BaseOptions(
-            model_asset_path=LANDMARKER_PATH
-        ),
-        num_faces=1,
-        min_face_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-        output_face_blendshapes=True,
-        running_mode=mp_vision.RunningMode.LIVE_STREAM,
-        result_callback=None  # akan di-override
-    )
-    # Untuk kamera, gunakan mode IMAGE agar lebih mudah dikontrol
-    opts2 = mp_vision.FaceLandmarkerOptions(
-        base_options=mp_python.BaseOptions(
-            model_asset_path=LANDMARKER_PATH
-        ),
-        num_faces=1,
-        min_face_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-        output_face_blendshapes=True,
-        running_mode=mp_vision.RunningMode.VIDEO
-    )
-    return mp_vision.FaceLandmarker.create_from_options(opts2)
-
-
-def ambil_blendshapes(blendshapes):
-    target = {'eyeBlinkLeft', 'eyeBlinkRight', 'jawOpen', 'mouthFunnel'}
-    hasil  = {}
-    if not blendshapes:
-        return None
-    for bs in blendshapes[0]:
-        if bs.category_name in target:
-            hasil[bs.category_name] = bs.score
-    return hasil if len(hasil) == 4 else None
-
-
-def hitung_head_pose(lm, fw, fh):
+def hitung_head_pose(landmarks_2d, fw, fh):
+    """
+    Hitung pitch, yaw, roll dari 6 titik landmark 2D.
+    
+    Args:
+        landmarks_2d: list of [x, y] dalam pixel (sudah dikali fw/fh oleh browser)
+        fw: frame width
+        fh: frame height
+    
+    Returns:
+        (pitch, yaw, roll) dalam derajat, atau (None, None, None) jika gagal
+    """
     try:
-        face_2d = np.array([
-            [lm[i].x * fw, lm[i].y * fh]
-            for i in POSE_IDX
-        ], dtype=np.float64)
-        cam  = np.array([[fw,0,fw/2],[0,fw,fh/2],[0,0,1]], dtype=np.float64)
-        dist = np.zeros((4,1), dtype=np.float64)
+        face_2d = np.array(landmarks_2d, dtype=np.float64)
+        if face_2d.shape != (6, 2):
+            return None, None, None
+        
+        cam  = np.array([[fw, 0, fw/2], [0, fw, fh/2], [0, 0, 1]], dtype=np.float64)
+        dist = np.zeros((4, 1), dtype=np.float64)
         ok, rv, _ = cv2.solvePnP(FACE_3D, face_2d, cam, dist,
                                   flags=cv2.SOLVEPNP_ITERATIVE)
         if not ok:
@@ -143,12 +101,15 @@ def hitung_head_pose(lm, fw, fh):
         p = p - 180 if p > 90 else (p + 180 if p < -90 else p)
         y = y - 180 if y > 90 else (y + 180 if y < -90 else y)
         r = r - 180 if r > 90 else (r + 180 if r < -90 else r)
-        return round(p,4), round(y,4), round(r,4)
-    except:
+        return round(p, 4), round(y, 4), round(r, 4)
+    except Exception:
         return None, None, None
 
 
 def deteksi_blink_events(eye_list):
+    """
+    Deteksi event blink (mata tertutup beruntun) dari buffer eye blendshape.
+    """
     events   = []
     in_blink = False
     dur      = 0
@@ -168,8 +129,8 @@ def deteksi_blink_events(eye_list):
 
 def hitung_fitur_dari_window(eye_list, jaw_list, pitch_list, yaw_list):
     """
-    Hitung 14 fitur dari buffer window saat ini.
-    Harus identik dengan feature engineering saat training.
+    Hitung 14 fitur dari buffer sliding window.
+    Harus identik dengan feature engineering saat training model.
     """
     eye   = np.array(eye_list)
     jaw   = np.array(jaw_list)
@@ -219,361 +180,253 @@ def hitung_fitur_dari_window(eye_list, jaw_list, pitch_list, yaw_list):
     ]])
 
 
-def gambar_ui(frame, status, label_pred, warna, deteksi_rate,
-              fase_kalibrasi, kalibrasi_sisa, no_face):
-    """Render overlay UI pada frame."""
-    h, w = frame.shape[:2]
+# ============================================================
+# MODEL LOADER (di-load sekali saat startup)
+# ============================================================
 
-    # Background bar atas
-    # cv2.rectangle(frame, (0, 0), (w, 70), (20, 20, 20), -1)
+_model = None
+_model_lock = threading.Lock()
 
-    if no_face:
-        pass
-        # cv2.putText(frame, "Wajah tidak terdeteksi",
-        #             (20, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
-        #             (0, 200, 255), 2)
-    else:
-
-        # Indikator kelas (lingkaran kecil)
-        for i, (nama, col) in enumerate(zip(
-            ["FOKUS", "MULAI", "KANTUK"],
-            [(50,205,50), (0,165,255), (0,0,255)]
-        )):
-            alpha = 1.0 if i == label_pred else 0.3
-            c     = tuple(int(v * alpha) for v in col)
-            cv2.circle(frame, (w - 120 + i * 35, 35), 10, c, -1)
-
-    # Detection rate bar kecil di pojok kanan bawah
-    rate_text = f"Det: {deteksi_rate:.0f}%"
-    cv2.putText(frame, rate_text,
-                (w - 100, h - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4,
-                (150, 150, 150), 1)
-
-    return frame
+def get_model():
+    """Load model CatBoost sekali (singleton), thread-safe."""
+    global _model
+    if _model is not None:
+        return _model
+    
+    with _model_lock:
+        if _model is not None:
+            return _model
+        
+        if not os.path.exists(MODEL_PATH):
+            raise FileNotFoundError(f"Model tidak ditemukan: {MODEL_PATH}")
+        
+        logger.info("Memuat model CatBoost dari %s ...", MODEL_PATH)
+        _model = CatBoostClassifier()
+        _model.load_model(MODEL_PATH)
+        logger.info("Model CatBoost siap.")
+        return _model
 
 
 # ============================================================
-# MAIN
+# DETECTION SESSION — per-user state untuk WebSocket
 # ============================================================
 
-def main():
-    # 1. Download model jika belum ada
-    download_landmarker()
+class DetectionSession:
+    """
+    Satu instance per user yang sedang melakukan deteksi.
+    State-fully menerima frame data dari browser, menjalankan inference,
+    dan mengembalikan hasil deteksi.
 
-    # 2. Load model CatBoost
-    if not os.path.exists(MODEL_PATH):
-        print(f"ERROR: {MODEL_PATH} tidak ditemukan.")
-        print("Letakkan file model di folder yang sama dengan script ini.")
-        return
+    Dipanggil dari WebSocket handler di app.py:
+        session = DetectionSession(user_id)
+        result = session.process_frame(frame_data)
+    """
 
-    print("Memuat model CatBoost...")
-    model = CatBoostClassifier()
-    model.load_model(MODEL_PATH)
-    print("Model siap.")
+    def __init__(self, user_id):
+        self.user_id = user_id
+        self.model = get_model()
 
-    # 3. Inisialisasi FaceLandmarker
-    print("Menyiapkan FaceLandmarker...")
-    detector = buat_detector()
-    print("FaceLandmarker siap.")
+        # Sliding window buffers (30 frame)
+        self.buf_eye   = deque(maxlen=WINDOW_SIZE)
+        self.buf_jaw   = deque(maxlen=WINDOW_SIZE)
+        self.buf_pitch = deque(maxlen=WINDOW_SIZE)
+        self.buf_yaw   = deque(maxlen=WINDOW_SIZE)
 
-    # 4. Buka kamera
-    cap = cv2.VideoCapture(KAMERA_IDX)
-    if not cap.isOpened():
-        print(f"ERROR: Kamera {KAMERA_IDX} tidak bisa dibuka.")
-        return
+        # State
+        self.frame_idx        = 0
+        self.status           = 'Mencari Wajah...'
+        self.label_pred       = 0
+        self.warna_status     = WARNA[0]
+        self.microsleep_counter = 0
+        self.lelah_counter    = 0
+        self.menguap_counter  = 0
+        self.lelah_logged     = False
+        self.microsleep_logged = False
+        self.microsleep_event_count = 0
+        self.deteksi_history  = deque(maxlen=90)
 
-    fw  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    fh  = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    print(f"Kamera: {fw}x{fh} @ {fps:.0f}fps")
-    print("Tekan 'q' untuk keluar.")
+        # Kalibrasi
+        self.kalibrasi_aktif  = True
+        self.kalibrasi_mulai  = time.time()
 
-    # Buffer sliding window
-    buf_eye   = deque(maxlen=WINDOW_SIZE)
-    buf_jaw   = deque(maxlen=WINDOW_SIZE)
-    buf_pitch = deque(maxlen=WINDOW_SIZE)
-    buf_yaw   = deque(maxlen=WINDOW_SIZE)
+        # Pending events (untuk dicatat ke DB oleh Flask)
+        self.pending_events   = []
 
-    # State
-    frame_idx       = 0
-    ts_ms           = 0
-    status          = "Memulai..."
-    label_pred      = 0
-    warna_status    = WARNA[0]
-    deteksi_history = deque(maxlen=90)  # 3 detik
+    def process_frame(self, data):
+        """
+        Proses satu frame data dari browser.
 
-    # Fase kalibrasi
-    kalibrasi_aktif = True
-    kalibrasi_mulai = time.time()
+        Args:
+            data (dict): Data dari browser dengan struktur:
+                {
+                    "eyeBlinkLeft": float,
+                    "eyeBlinkRight": float,
+                    "jawOpen": float,
+                    "mouthFunnel": float,
+                    "landmarks_2d": [[x,y]*6],  # 6 titik POSE_IDX dalam pixel
+                    "frame_width": int,
+                    "frame_height": int,
+                    "has_face": bool
+                }
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+        Returns:
+            dict: Hasil deteksi untuk dikirim kembali ke browser:
+                {
+                    "status": str,
+                    "label_pred": int,
+                    "ear": float or None,
+                    "mar": float or None,
+                    "microsleep_counter": int,
+                    "microsleep_event_count": int,
+                    "trigger_alarm": bool,
+                    "buffer_size": int,
+                    "ear_mean": float or None,
+                    "mar_mean": float or None,
+                    "has_new_events": list  # event baru untuk dicatat di DB
+                }
+        """
+        self.frame_idx += 1
 
-        frame_idx += 1
-        ts_ms      = int(frame_idx / fps * 1000)
-
-        # Flip horizontal (efek cermin)
-        frame = cv2.flip(frame, 1)
-        rgb   = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        result = detector.detect_for_video(mp_img, ts_ms)
-
-        no_face = (not result.face_landmarks or
-                   len(result.face_landmarks) == 0)
-
-        deteksi_history.append(0 if no_face else 1)
-        det_rate = sum(deteksi_history) / len(deteksi_history) * 100
-
-        if not no_face:
-            lm = result.face_landmarks[0]
-            bs = ambil_blendshapes(result.face_blendshapes)
-            p, y, r = hitung_head_pose(lm, fw, fh)
-
-            if bs is not None and p is not None:
-                eye_avg = (bs['eyeBlinkLeft'] + bs['eyeBlinkRight']) / 2.0
-                buf_eye.append(eye_avg)
-                buf_jaw.append(bs['jawOpen'])
-                buf_pitch.append(p)
-                buf_yaw.append(y)
-
-        # Cek status kalibrasi
-        sisa_kalibrasi = KALIBRASI_DETIK - (time.time() - kalibrasi_mulai)
-        if kalibrasi_aktif and sisa_kalibrasi <= 0:
-            kalibrasi_aktif = False
-            print("Kalibrasi selesai. Mulai deteksi.")
-
-        # Prediksi (hanya jika kalibrasi selesai dan buffer penuh)
-        if not kalibrasi_aktif and len(buf_eye) == WINDOW_SIZE:
-            fitur  = hitung_fitur_dari_window(
-                list(buf_eye), list(buf_jaw),
-                list(buf_pitch), list(buf_yaw)
-            )
-            pred       = int(model.predict(fitur).flatten()[0])
-            label_pred = pred
-            status     = LABEL_NAMES[pred]
-            warna_status = WARNA[pred]
-
-        # Render UI
-        frame = gambar_ui(
-            frame, status, label_pred, warna_status,
-            det_rate, kalibrasi_aktif, sisa_kalibrasi, no_face
-        )
-
-        cv2.imshow("BOBOK — Deteksi Kantuk", frame)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    cap.release()
-    detector.close()
-    cv2.destroyAllWindows()
-    print("Selesai.")
-
-
-if __name__ == "__main__":
-    main()
-
-# ============================================================
-# SHARED STATE — dibaca oleh Flask
-# ============================================================
-import threading
-
-state_lock = threading.Lock()
-shared_state = {
-    'status': 'Mencari Wajah...',
-    'ear': None,
-    'mar': None,
-    'microsleep_counter': 0,
-    'microsleep_event_count': 0,
-    'trigger_alarm': False,
-    'buffer_size': 0,
-    'ear_mean': None,
-    'mar_mean': None,
-    'frame': None,
-    'running': False,
-    'pending_events': []
-}
-
-def start_detection():
-    global shared_state
-
-    download_landmarker()
-
-    if not os.path.exists(MODEL_PATH):
-        print(f"ERROR: {MODEL_PATH} tidak ditemukan.")
-        return
-
-    model = CatBoostClassifier()
-    model.load_model(MODEL_PATH)
-    detector = buat_detector()
-
-    cap = cv2.VideoCapture(KAMERA_IDX)
-    if not cap.isOpened():
-        print("ERROR: Kamera tidak bisa dibuka.")
-        return
-
-    fw  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    fh  = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-
-    buf_eye   = deque(maxlen=WINDOW_SIZE)
-    buf_jaw   = deque(maxlen=WINDOW_SIZE)
-    buf_pitch = deque(maxlen=WINDOW_SIZE)
-    buf_yaw   = deque(maxlen=WINDOW_SIZE)
-
-    frame_idx        = 0
-    ts_ms            = 0
-    status           = 'Mencari Wajah...'
-    label_pred       = 0
-    warna_status     = WARNA[0]
-    microsleep_counter = 0
-    lelah_counter = 0
-    menguap_counter = 0
-    lelah_logged = False
-    microsleep_logged = False
-    microsleep_event_count = 0       # total event microsleep dalam sesi
-    prev_microsleep_active = False   # apakah frame sebelumnya sedang microsleep
-    MICROSLEEP_EVENT_THRESHOLD = 10  # alarm baru bunyi setelah 10 event
-    deteksi_history  = deque(maxlen=90)
-    kalibrasi_aktif  = True
-    kalibrasi_mulai  = time.time()
-
-    with state_lock:
-        shared_state['running'] = True
-
-    while shared_state['running']:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        frame_idx += 1
-        ts_ms      = int(frame_idx / fps * 1000)
-        frame      = cv2.flip(frame, 1)
-        rgb        = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        mp_img = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        result = detector.detect_for_video(mp_img, ts_ms)
-
-        no_face = (not result.face_landmarks or len(result.face_landmarks) == 0)
-        deteksi_history.append(0 if no_face else 1)
-
+        has_face = data.get('has_face', False)
         ear_val = None
         mar_val = None
 
-        if not no_face:
-            lm = result.face_landmarks[0]
-            bs = ambil_blendshapes(result.face_blendshapes)
-            p, y, r = hitung_head_pose(lm, fw, fh)
+        if has_face:
+            eye_blink_left  = data.get('eyeBlinkLeft', 0)
+            eye_blink_right = data.get('eyeBlinkRight', 0)
+            jaw_open        = data.get('jawOpen', 0)
+            landmarks_2d    = data.get('landmarks_2d', [])
+            fw              = data.get('frame_width', 640)
+            fh              = data.get('frame_height', 480)
 
-            if bs is not None and p is not None:
-                eye_avg = (bs['eyeBlinkLeft'] + bs['eyeBlinkRight']) / 2.0
+            # Hitung head pose dari 6 titik landmark
+            p, y, r = hitung_head_pose(landmarks_2d, fw, fh)
+
+            if p is not None and len(landmarks_2d) == 6:
+                eye_avg = (eye_blink_left + eye_blink_right) / 2.0
                 ear_val = float(eye_avg)
-                mar_val = float(bs['jawOpen'])
-                buf_eye.append(eye_avg)
-                buf_jaw.append(bs['jawOpen'])
-                buf_pitch.append(p)
-                buf_yaw.append(y)
+                mar_val = float(jaw_open)
 
-        sisa_kalibrasi = KALIBRASI_DETIK - (time.time() - kalibrasi_mulai)
-        if kalibrasi_aktif and sisa_kalibrasi <= 0:
-            kalibrasi_aktif = False
+                self.buf_eye.append(eye_avg)
+                self.buf_jaw.append(jaw_open)
+                self.buf_pitch.append(p)
+                self.buf_yaw.append(y)
 
-        if no_face:
-            status = 'Mencari Wajah...'
-            microsleep_counter = 0
-        elif kalibrasi_aktif:
-            status = f'Kalibrasi... ({sisa_kalibrasi:.0f}s)'
-        elif len(buf_eye) == WINDOW_SIZE:
-            fitur  = hitung_fitur_dari_window(
-                list(buf_eye), list(buf_jaw),
-                list(buf_pitch), list(buf_yaw)
+        # Tracking deteksi
+        self.deteksi_history.append(0 if not has_face else 1)
+
+        # Cek kalibrasi
+        sisa_kalibrasi = KALIBRASI_DETIK - (time.time() - self.kalibrasi_mulai)
+        if self.kalibrasi_aktif and sisa_kalibrasi <= 0:
+            self.kalibrasi_aktif = False
+            logger.info("User %s: Kalibrasi selesai.", self.user_id)
+
+        trigger_alarm = False
+
+        if not has_face:
+            self.status = 'Mencari Wajah...'
+            self.microsleep_counter = 0
+        elif self.kalibrasi_aktif:
+            self.status = f'Kalibrasi... ({max(0, sisa_kalibrasi):.0f}s)'
+        elif len(self.buf_eye) == WINDOW_SIZE:
+            # Inference
+            fitur = hitung_fitur_dari_window(
+                list(self.buf_eye), list(self.buf_jaw),
+                list(self.buf_pitch), list(self.buf_yaw)
             )
-            pred       = int(model.predict(fitur).flatten()[0])
-            label_pred = pred
-            warna_status = WARNA[pred]
+            pred = int(self.model.predict(fitur).flatten()[0])
+            self.label_pred = pred
+            self.warna_status = WARNA[pred]
 
-            # Microsleep counter (mata tertutup beruntun)
+            # Microsleep counter
             if ear_val is not None and ear_val >= MICROSLEEP_THRESH:
-                microsleep_counter += 1
+                self.microsleep_counter += 1
             else:
-                microsleep_counter = 0
-                microsleep_logged = False
-                
-            # Lelah counter (prediksi 1 atau 2 beruntun)
+                self.microsleep_counter = 0
+                self.microsleep_logged = False
+
+            # Lelah counter
             if pred in [1, 2]:
-                lelah_counter += 1
+                self.lelah_counter += 1
             else:
-                lelah_counter = 0
-                
-            # Menguap counter (Mouth Aspect Ratio >= 0.4)
+                self.lelah_counter = 0
+
+            # Menguap counter
             if mar_val is not None and mar_val >= 0.4:
-                menguap_counter += 1
+                self.menguap_counter += 1
             else:
-                menguap_counter = 0
-                
-            is_fatigued = (lelah_counter >= 360) or (menguap_counter >= 60)
-            
+                self.menguap_counter = 0
+
+            is_fatigued = (self.lelah_counter >= 360) or (self.menguap_counter >= 60)
+
             if not is_fatigued:
-                lelah_logged = False
+                self.lelah_logged = False
 
-            # Masukkan ke antrean logging tepat SATU KALI per siklus
-            if is_fatigued and not lelah_logged:
-                with state_lock:
-                    shared_state['pending_events'].append('menguap_lelah')
-                lelah_logged = True
-            
-            if microsleep_counter >= 720 and not microsleep_logged:
-                with state_lock:
-                    shared_state['pending_events'].append('microsleep')
-                microsleep_logged = True
+            # Catat event ke pending queue
+            if is_fatigued and not self.lelah_logged:
+                self.pending_events.append('menguap_lelah')
+                self.lelah_logged = True
 
-            # Alarm terpicu
-            trigger_alarm = (microsleep_counter >= 720) or is_fatigued
+            if self.microsleep_counter >= 720 and not self.microsleep_logged:
+                self.pending_events.append('microsleep')
+                self.microsleep_logged = True
 
-            if microsleep_counter >= 720:
-                status = 'BAHAYA: MICROSLEEP!'
-                warna_status = (0, 0, 255)
+            # Alarm
+            trigger_alarm = (self.microsleep_counter >= 720) or is_fatigued
+
+            # Status string
+            if self.microsleep_counter >= 720:
+                self.status = 'BAHAYA: MICROSLEEP!'
+                self.warna_status = (0, 0, 255)
             elif is_fatigued:
-                if menguap_counter >= 60 or pred == 2:
-                    status = 'PERINGATAN: MENGUAP / LELAH BERAT'
+                if self.menguap_counter >= 60 or pred == 2:
+                    self.status = 'PERINGATAN: MENGUAP / LELAH BERAT'
                 else:
-                    status = 'PERINGATAN: MATA MULAI LELAH / SAYU'
-                warna_status = (0, 165, 255)
+                    self.status = 'PERINGATAN: MATA MULAI LELAH / SAYU'
+                self.warna_status = (0, 165, 255)
             else:
-                status = 'SADAR (FOKUS)'
-                warna_status = (50, 205, 50)
+                self.status = 'SADAR (FOKUS)'
+                self.warna_status = (50, 205, 50)
 
-        # Render overlay di frame
-        frame = gambar_ui(
-            frame, status, label_pred, warna_status,
-            sum(deteksi_history) / len(deteksi_history) * 100,
-            kalibrasi_aktif, max(0, sisa_kalibrasi), no_face
-        )
+        # Ambil pending events
+        new_events = []
+        if self.pending_events:
+            new_events = list(self.pending_events)
+            self.pending_events.clear()
 
-        # Encode frame ke JPEG
-        _, jpeg = cv2.imencode('.jpg', frame)
+        # Hasil untuk dikirim via WebSocket
+        det_rate = sum(self.deteksi_history) / len(self.deteksi_history) * 100 if self.deteksi_history else 0
 
-        with state_lock:
-            shared_state['status']               = status
-            shared_state['ear']                  = ear_val
-            shared_state['mar']                  = mar_val
-            shared_state['microsleep_counter']   = microsleep_counter
-            shared_state['microsleep_event_count'] = microsleep_event_count
-            shared_state['trigger_alarm']        = trigger_alarm if 'trigger_alarm' in dir() else False
-            shared_state['buffer_size']          = len(buf_eye)
-            shared_state['ear_mean']             = float(np.mean(buf_eye)) if buf_eye else None
-            shared_state['mar_mean']             = float(np.mean(buf_jaw)) if buf_jaw else None
-            shared_state['frame']                = jpeg.tobytes()
+        return {
+            'status': self.status,
+            'label_pred': self.label_pred,
+            'ear': ear_val,
+            'mar': mar_val,
+            'microsleep_counter': self.microsleep_counter,
+            'microsleep_event_count': self.microsleep_event_count,
+            'trigger_alarm': trigger_alarm,
+            'buffer_size': len(self.buf_eye),
+            'ear_mean': float(np.mean(self.buf_eye)) if self.buf_eye else None,
+            'mar_mean': float(np.mean(self.buf_jaw)) if self.buf_jaw else None,
+            'deteksi_rate': round(det_rate, 1),
+            'kalibrasi_aktif': self.kalibrasi_aktif,
+            'kalibrasi_sisa': max(0, sisa_kalibrasi) if 'sisa_kalibrasi' in dir() else 0,
+            'has_new_events': new_events,
+        }
 
-    cap.release()
-    detector.close()
-    with state_lock:
-        shared_state['running'] = False
+    def is_calibrating(self):
+        return self.kalibrasi_aktif
 
-
-if __name__ == "__main__":
-    start_detection()
+    def reset(self):
+        """Reset session (tidak digunakan lagi)."""
+        self.buf_eye.clear()
+        self.buf_jaw.clear()
+        self.buf_pitch.clear()
+        self.buf_yaw.clear()
+        self.frame_idx = 0
+        self.status = 'Mencari Wajah...'
+        self.label_pred = 0
+        self.microsleep_counter = 0
+        self.lelah_counter = 0
+        self.menguap_counter = 0
+        self.pending_events.clear()

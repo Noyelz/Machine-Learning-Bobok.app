@@ -165,11 +165,11 @@
     <div class="page-header">
       <div>
         <div class="page-title">Live Monitor</div>
-        <div class="page-sub">Status real-time semua pekerja aktif — diperbarui setiap 2 detik</div>
+        <div class="page-sub">Status real-time semua pekerja aktif — WebSocket + Polling</div>
       </div>
       <div style="display:flex; align-items:center; gap:8px;">
-        <span class="conn-dot active"></span>
-        <span style="font-size:12px; color:var(--text-secondary);">Live</span>
+        <span class="conn-dot" id="adminConnDot"></span>
+        <span style="font-size:12px; color:var(--text-secondary);" id="adminConnLabel">Menghubungkan...</span>
       </div>
     </div>
 
@@ -179,7 +179,108 @@
 
   </div>
 
+  <!-- Socket.IO client -->
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"
+          integrity="sha384-2uaZQnqv7suG5ErgBMFLMO4oPcJbIIsL2VOxmR68AMj5BqLBImCMKlZZjFDQ7oFP"
+          crossorigin="anonymous"></script>
+
   <script>
+    // ── WebSocket untuk admin ─────────────────────────────────────
+    const adminSocket = io({
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionAttempts: 10
+    });
+
+    adminSocket.on('connect', () => {
+      console.log('[AdminWS] Connected:', adminSocket.id);
+      document.getElementById('adminConnDot').classList.add('active');
+      document.getElementById('adminConnLabel').textContent = 'Live (WS)';
+      // Join admin room
+      adminSocket.emit('join_admin');
+    });
+
+    adminSocket.on('disconnect', () => {
+      document.getElementById('adminConnDot').classList.remove('active');
+      document.getElementById('adminConnLabel').textContent = 'Offline';
+    });
+
+    adminSocket.on('worker_update', (data) => {
+      // Update satu card worker secara real-time
+      updateWorkerCard(data);
+    });
+
+    adminSocket.on('worker_status_changed', (data) => {
+      // Reload grid penuh saat worker start/stop
+      loadLive();
+    });
+
+    // Cache pekerja data untuk update real-time
+    const workerDataCache = {};
+
+    function updateWorkerCard(data) {
+      workerDataCache[data.user_id] = data;
+      // Re-render grid dari cache + data baru
+      renderGridFromCache();
+    }
+
+    function renderGridFromCache() {
+      const grid = document.getElementById('liveGrid');
+      const entries = Object.values(workerDataCache);
+      
+      if (entries.length === 0) {
+        grid.innerHTML = '<div class="empty-state">Belum ada pekerja terdaftar atau aktif.</div>';
+        return;
+      }
+
+      // Sort: danger dulu
+      entries.sort((a, b) => {
+        const order = { 'BAHAYA': 0, 'PERINGATAN': 1, 'FOKUS': 2, 'SADAR': 2 };
+        const aKey = Object.keys(order).find(k => (a.status || '').includes(k)) || 'Z';
+        const bKey = Object.keys(order).find(k => (b.status || '').includes(k)) || 'Z';
+        return (order[aKey] || 99) - (order[bKey] || 99);
+      });
+
+      grid.innerHTML = '';
+      entries.forEach(w => {
+        const cls = getStatusClass(w.status);
+        const isDanger = cls === 'status-danger';
+        const lastUp = w.last_update
+          ? new Date(w.last_update).toLocaleTimeString('id-ID', { hour12: false })
+          : '—';
+
+        const card = document.createElement('div');
+        card.className = `worker-card ${cls}${isDanger ? ' pulse-ring' : ''}`;
+        card.id = `worker-${w.user_id}`;
+        card.innerHTML = `
+          <div class="worker-head">
+            <div class="worker-avatar">${initials(w.nama)}</div>
+            <div>
+              <div class="worker-name">${w.nama}</div>
+              <span class="worker-status-badge">${statusLabel(w.status)}</span>
+            </div>
+          </div>
+          <div class="worker-metrics">
+            <div>
+              <div class="w-metric-label">EAR</div>
+              <div class="w-metric-val">${w.ear != null ? w.ear.toFixed(3) : '—'}</div>
+            </div>
+            <div>
+              <div class="w-metric-label">MAR</div>
+              <div class="w-metric-val">${w.mar != null ? w.mar.toFixed(3) : '—'}</div>
+            </div>
+          </div>
+          <div class="worker-footer">
+            <span class="worker-footer-dot"></span>
+            Diperbarui ${lastUp}
+          </div>
+        `;
+        grid.appendChild(card);
+      });
+    }
+
+    // ── Polling fallback ─────────────────────────────────────────
     function initials(name) {
       return name.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
     }
