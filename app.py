@@ -234,32 +234,45 @@ def api_stop_detection():
 @login_required
 def api_process_frame():
     """
-    Terima JPEG frame dari browser.
+    Terima base64 JPEG frame dari browser (JSON).
     Decode → MediaPipe → CatBoost → return JSON.
     """
     user_id = current_user.id
+    import base64
 
-    if 'frame' not in request.files:
-        logger.warning("User %s: No frame file in request", user_id)
-        return jsonify({'error': 'No frame file'}), 400
-
-    file = request.files['frame']
-    file_bytes = file.read()
-    file.seek(0)  # reset stream for PIL
-    logger.debug("User %s: Received frame, size=%d bytes", user_id, len(file_bytes))
+    # Cek format: bisa base64 JSON atau FormData (backward compatible)
+    if request.is_json:
+        data = request.get_json(force=True)
+        if not data or 'frame_base64' not in data:
+            return jsonify({'error': 'Missing frame_base64'}), 400
+        try:
+            frame_bytes = base64.b64decode(data['frame_base64'])
+        except Exception as e:
+            logger.error("User %s: Base64 decode error: %s", user_id, e)
+            return jsonify({'error': 'Invalid base64'}), 400
+        fw = int(data.get('frame_width', 640))
+        fh = int(data.get('frame_height', 480))
+        logger.debug("User %s: Received base64 frame, size=%d bytes", user_id, len(frame_bytes))
+    elif 'frame' in request.files:
+        file = request.files['frame']
+        frame_bytes = file.read()
+        file.seek(0)
+        fw = int(request.form.get('frame_width', 640))
+        fh = int(request.form.get('frame_height', 480))
+        logger.debug("User %s: Received formdata frame, size=%d bytes", user_id, len(frame_bytes))
+    else:
+        return jsonify({'error': 'No frame data'}), 400
 
     try:
         # Decode JPEG ke numpy array BGR
-        img = Image.open(file.stream)
-        img = img.convert('RGB')
-        frame_rgb = np.array(img)
-        frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+        nparr = np.frombuffer(frame_bytes, np.uint8)
+        frame_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        if frame_bgr is None:
+            raise ValueError("Failed to decode image")
     except Exception as e:
         logger.error("User %s: Failed to decode image: %s", user_id, e)
         return jsonify({'error': 'Invalid image: ' + str(e)}), 400
 
-    fw = int(request.form.get('frame_width', frame_bgr.shape[1]))
-    fh = int(request.form.get('frame_height', frame_bgr.shape[0]))
     logger.debug("User %s: Frame decoded, shape=%s", user_id, frame_bgr.shape)
 
     # Jalankan MediaPipe
