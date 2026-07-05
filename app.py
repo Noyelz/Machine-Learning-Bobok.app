@@ -240,9 +240,14 @@ def api_process_frame():
     user_id = current_user.id
 
     if 'frame' not in request.files:
+        logger.warning("User %s: No frame file in request", user_id)
         return jsonify({'error': 'No frame file'}), 400
 
     file = request.files['frame']
+    file_bytes = file.read()
+    file.seek(0)  # reset stream for PIL
+    logger.debug("User %s: Received frame, size=%d bytes", user_id, len(file_bytes))
+
     try:
         # Decode JPEG ke numpy array BGR
         img = Image.open(file.stream)
@@ -250,14 +255,19 @@ def api_process_frame():
         frame_rgb = np.array(img)
         frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
     except Exception as e:
-        logger.error("Failed to decode image: %s", e)
-        return jsonify({'error': 'Invalid image'}), 400
+        logger.error("User %s: Failed to decode image: %s", user_id, e)
+        return jsonify({'error': 'Invalid image: ' + str(e)}), 400
 
     fw = int(request.form.get('frame_width', frame_bgr.shape[1]))
     fh = int(request.form.get('frame_height', frame_bgr.shape[0]))
+    logger.debug("User %s: Frame decoded, shape=%s", user_id, frame_bgr.shape)
 
     # Jalankan MediaPipe
-    has_face, blendshapes_dict, landmarks_list = process_image(frame_bgr)
+    try:
+        has_face, blendshapes_dict, landmarks_list = process_image(frame_bgr)
+    except Exception as e:
+        logger.error("User %s: MediaPipe error: %s", user_id, e)
+        return jsonify({'error': 'MediaPipe error: ' + str(e)}), 500
 
     # Auto-start session
     if user_id not in user_sessions:
@@ -269,8 +279,10 @@ def api_process_frame():
     try:
         result = session.process_frame_data(blendshapes_dict, landmarks_list, fw, fh, frame_bgr)
     except Exception as e:
-        logger.error("Error process_frame user %s: %s", user_id, e)
-        return jsonify({'error': str(e)}), 500
+        logger.error("User %s: process_frame error: %s", user_id, e)
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': 'Inference error: ' + str(e)}), 500
 
     # Catat event baru
     new_events = result.get('has_new_events', [])

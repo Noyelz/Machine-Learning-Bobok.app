@@ -228,6 +228,12 @@ function detectionLoop(timestamp) {
     }
   }
 
+  // Resize canvas max 640px width untuk hemat bandwidth
+  if (canvasElement.width > 640) {
+    canvasElement.height = Math.round(canvasElement.height * (640 / canvasElement.width));
+    canvasElement.width = 640;
+  }
+
   // Draw video ke canvas (flip horizontal)
   const cw = canvasElement.width, ch = canvasElement.height;
   canvasCtx.save();
@@ -240,7 +246,10 @@ function detectionLoop(timestamp) {
 
   // Export JPEG dan kirim ke server
   canvasElement.toBlob(async (blob) => {
-    if (!blob) return;
+    if (!blob) {
+      console.error('[Frame] toBlob returned null');
+      return;
+    }
 
     const formData = new FormData();
     formData.append('frame', blob, 'frame.jpg');
@@ -252,18 +261,24 @@ function detectionLoop(timestamp) {
         method: 'POST',
         body: formData
       });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
+      if (!res.ok) {
+        let errorText = '';
+        try { errorText = await res.text(); } catch (e) {}
+        console.error('[Frame] Server error:', res.status, errorText);
+        throw new Error('HTTP ' + res.status + (errorText ? ': ' + errorText.substring(0,100) : ''));
+      }
       const result = await res.json();
       frameErrorCount = 0;
       updateHUD(result);
     } catch (err) {
       frameErrorCount++;
-      if (frameErrorCount > 30) {
-        appendLog('[ERROR] Server tidak merespons.', 'log-danger');
+      console.error('[Frame] Send error:', err.message);
+      if (frameErrorCount > 10) {
+        appendLog('[ERROR] Server: ' + err.message, 'log-danger');
         frameErrorCount = 0;
       }
     }
-  }, 'image/jpeg', 0.6);
+  }, 'image/jpeg', 0.5);
 }
 
 function renderCanvasOnly() {
