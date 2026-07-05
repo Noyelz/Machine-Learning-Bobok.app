@@ -176,10 +176,4 @@ KALIBRASI_DETIK        = 5     # calibration duration
 
 ## 📝 License
 
-MIT — [Noyelz](https://github.com/Noyelz)
-
----
-
-<div align="center">
-Made with ❤️ for safety
-</div>
+MIT
