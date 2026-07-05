@@ -85,8 +85,17 @@ function stopSession() {
 function stopCamera() { if (mediaStream) { mediaStream.getTracks().forEach(t=>t.stop()); mediaStream=null; } if(videoElement) videoElement.srcObject=null; }
 
 function resizeCanvas() {
-  const w = document.querySelector('.cam-wrapper'); if (!w||!canvasElement) return;
-  const r = w.getBoundingClientRect(); canvasElement.width = r.width; canvasElement.height = r.height;
+  const wrapper = document.querySelector('.cam-wrapper');
+  if (!wrapper || !canvasElement) return;
+  const wrapperWidth = wrapper.getBoundingClientRect().width;
+  canvasElement.width = Math.min(wrapperWidth, 640);
+  // Gunakan aspect ratio dari video asli (fallback 4:3)
+  const vid = $('videoElement');
+  let ratio = 4/3;
+  if (vid && vid.videoWidth && vid.videoHeight) {
+    ratio = vid.videoWidth / vid.videoHeight;
+  }
+  canvasElement.height = Math.round(canvasElement.width / ratio);
 }
 
 function detectionLoop(ts) {
