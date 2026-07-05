@@ -3,8 +3,6 @@ import logging
 import numpy as np
 import cv2
 from datetime import datetime
-from io import BytesIO
-from PIL import Image
 
 from flask import Flask, jsonify, render_template, redirect, url_for, request, flash
 from flask_cors import CORS
